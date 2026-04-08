@@ -196,20 +196,89 @@ The broad 5-seed sweep found:
 
 The core issue is that SkipUpdate's 2x rescaling **halves the stability boundary**, preventing the optimizer from using the aggressive LRs where the real gains are. The hypothesized "accumulate better momentum" benefit exists at best weakly (ratio ~1.1 at low LRs) and is overwhelmed by the stability cost.
 
-### Open questions
+## Deep Dive: AdamW vs SkipUpdate(AdamW, block)
 
-1. **Does this pattern hold for AdamW?** The broad sweep showed SkipUpdate(AdamW,block) at lr=0.03 beating AdamW at lr=0.01 — but this needs the same fine-grained validation with 30+ seeds
-2. **Adaptive methods may behave differently** — Adam's per-parameter scaling might absorb the 2x rescaling better than SGD
-3. **This is a 9D quadratic** — the dynamics in billion-parameter transformers are fundamentally different (heterogeneous block structure, heavy-tailed noise, etc.)
+The initial 5-seed sweep suggested SkipUpdate(AdamW,block) beats AdamW (0.003 vs 0.006). We tested this with **14 LRs and 30 seeds**.
 
-The Magma-specific alignment mechanism (damping based on gradient-momentum cosine similarity) does not show a clear benefit on this benchmark, at least with the default hyperparameters and our LR grid. The damping appears to be too aggressive for a 9D problem.
+### Same pattern: SkipUpdate doesn't help
+
+| Method | Best LR | Median Final Loss | IQR |
+|--------|---------|-------------------|-----|
+| AdamW | 0.015 | **0.00146** | [0.000457, 0.024475] |
+| SkipUpdate(AdamW,block) | 0.015 | 0.03497 | [0.004359, 0.428751] |
+
+**AdamW is 24x better** at optimal LR. Unlike SGD+Momentum, neither method diverges (Adam's adaptive scaling absorbs the 2x rescaling). But SkipUpdate consistently has **higher variance and worse median** at every LR.
+
+### Paired-seed comparison
+
+| LR | SkipUpdate wins | Median ratio (SU/AdamW) |
+|-----|----------------|-------------------------|
+| 0.001 | 13/30 | 1.01 |
+| 0.003 | 15/30 | 1.01 |
+| 0.005 | 5/30 | 1.77 |
+| 0.008 | 4/30 | 11.05 |
+| 0.010 | 11/30 | 2.73 |
+| 0.015 | 8/30 | 28.06 |
+| 0.020 | 9/30 | 14.43 |
+| 0.030 | 14/30 | 3.61 |
+| 0.050 | 15/30 | 2.37 |
+| 0.100 | 13/25 | 0.87 |
+
+At low LRs (0.001-0.003), the methods are indistinguishable. At moderate LRs (0.005-0.02), **AdamW wins decisively** — SkipUpdate wins only 4-11 out of 30 seeds with ratios of 2-28x worse. At very high LRs (0.05+), both methods have massive variance and neither is competitive with AdamW at lr=0.015.
+
+### Why adaptive scaling doesn't save SkipUpdate
+
+Unlike SGD, AdamW doesn't diverge with SkipUpdate — Adam's per-parameter v_t scaling absorbs the 2x factor. But SkipUpdate still adds **multiplicative Bernoulli noise** on top of the update, and this noise is amplified by the 2x rescaling. In the heterogeneous landscape, this extra variance prevents convergence to as low a loss as plain AdamW.
+
+### Plots
+
+| Plot | Description |
+|------|-------------|
+| `focused_adamw_lr_sweep.png` | Final loss vs LR with IQR bands (30 seeds) |
+| `focused_adamw_paired.png` | Paired-seed scatter plots at 6 LRs |
+| `focused_adamw_trajectories.png` | Loss trajectories at lr=0.01, 0.03, 0.1 |
+
+---
+
+## Implications for Understanding Why SkipUpdate Works
+
+### What the initial sweep suggested (with caveats)
+
+The broad 5-seed sweep found:
+1. SkipUpdate hurts without momentum (SGD: 11x worse)
+2. SkipUpdate on RMSProp is worse (because RMSProp uses raw gradient, not momentum, for updates)
+3. SkipUpdate(AdamW,block) seemingly beats AdamW at fixed LR
+
+### What the deep dives revealed
+
+**Both positive findings (SGD+Mom and AdamW) were artifacts of insufficient LR sweeps and too few seeds.**
+
+| Comparison | Initial 5-seed result | 30-seed fine-grained result |
+|------------|----------------------|----------------------------|
+| SGD+Mom vs SkipUpdate(SGD+Mom) | SkipUpdate 2x better | SGD+Mom **21x better** at optimal LR |
+| AdamW vs SkipUpdate(AdamW,block) | SkipUpdate 2x better | AdamW **24x better** at optimal LR |
+
+The consistent pattern across both base optimizers:
+1. **At matched LRs**, SkipUpdate is neutral at low LRs and increasingly worse at higher LRs
+2. **At optimal LRs**, the base optimizer always wins because it can either access higher LRs (SGD case) or converge to lower loss with less noise (AdamW case)
+3. The 2x rescaling adds noise that isn't compensated by any benefit on this benchmark
+
+### Why this benchmark may not capture SkipUpdate's real mechanism
+
+The paper's LLM experiments show clear benefits — so either:
+1. **The 9D quadratic is too simple** — it has only 3 blocks, no weight sharing, no deep structure
+2. **The noise structure matters** — real mini-batch noise has different properties (heavy-tailed, non-vanishing at optimum) than our row-subsampling noise
+3. **Scale matters** — with millions of parameters, the Bernoulli noise may average out better (element-wise: 9 coin flips = high variance; with 1M parameters = low variance)
+4. **The benefit may be in generalization, not optimization** — SkipUpdate may find flatter minima that generalize better, but on a quadratic there's only one minimum
+
+The Magma-specific alignment mechanism (damping based on gradient-momentum cosine similarity) also does not show a clear benefit on this benchmark. The damping appears to be too aggressive for a 9D problem.
 
 ---
 
 ## Caveats
 
 1. **This is a 9D quadratic** — very different from billion-parameter transformer training
-2. The paper's unspecified hyperparameters (subsampling fraction, iteration count) may account for the Magma discrepancy
+2. The paper's unspecified hyperparameters (subsampling fraction, iteration count) may account for discrepancies
 3. Block structure (3 blocks × 3 elements) is far smaller than real neural network blocks
 4. The multiplicative noise structure (vanishing at optimum) differs from real training noise
-5. **The LR stability boundary issue may not apply to adaptive methods** — Adam/RMSProp auto-scale steps, so the 2x rescaling may be absorbed differently
+5. The benefit may be in generalization (finding flat minima), which a quadratic cannot test
