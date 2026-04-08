@@ -66,21 +66,51 @@ Block-wise masking is consistently better. On this benchmark (3 blocks, 3 elemen
 
 ---
 
-## Key Finding 3: Magma Doesn't Reproduce the Paper's Advantage
+## Key Finding 3: Magma Doesn't Reproduce the Paper's Advantage (Confirmed with Tau Sweep)
 
-The paper claims Magma outperforms AdamW on the heterogeneous quadratic. We find the opposite:
+The paper (Section 4.4, Figure 4) claims "Magma achieves faster convergence and a lower final loss than AdamW" on the heterogeneous quadratic. We find the opposite, even after a comprehensive tau × LR sweep.
+
+### Initial finding (tau=2.0 only)
 
 | Optimizer | Final Loss |
 |-----------|-----------|
 | AdamW | 0.006 |
 | Magma(block) | 0.259 |
 
-The alignment score s_t stays around 0.5 throughout training (see alignment_scores.png), creating a ~4x effective learning rate reduction (s * p = 0.5 * 0.5 = 0.25). Even with our extended LR grid up to 0.3, Magma can't overcome this damping.
+The alignment score s_t stays around 0.5 with tau=2.0 because sigmoid(cossim/2) maps the full cossim range [-1,1] to only [0.38, 0.62] — almost no discrimination.
 
-Possible explanations for the discrepancy with the paper:
-1. Unspecified hyperparameters (subsampling fraction, beta values)
-2. Different number of iterations or LR range
-3. Magma may need specific tuning (temperature, EMA coefficient) for this problem scale
+### Tau sweep reproduction attempt
+
+We swept tau ∈ {0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0} × LR ∈ {0.003, 0.01, 0.03, 0.1, 0.3, 0.5, 1.0}, 20 seeds each:
+
+| Tau | Best LR | Median@500 | Median@10k | Wins vs AdamW |
+|-----|---------|------------|------------|---------------|
+| 0.01 | 0.03 | 6.03 | 0.209 | 2/20 |
+| 0.05 | 0.03 | 6.04 | 0.244 | 2/20 |
+| **0.1** | **0.03** | **6.00** | **0.185** | **4/20** |
+| 0.5 | 0.03 | 6.04 | 0.304 | 5/20 |
+| 1.0 | 0.03 | 6.32 | 0.220 | 3/20 |
+| 2.0 | 0.03 | 6.45 | 0.286 | 4/20 |
+| 5.0 | 0.03 | 6.54 | 0.422 | 2/20 |
+| **AdamW** | **0.03** | **4.06** | **0.006** | **—** |
+| RMSProp | 0.01 | 3.43 | 0.094 | — |
+
+**Best Magma (tau=0.1) is still 29x worse than AdamW.** The tau sweep has no meaningful effect — all taus give similar results. Magma never wins more than 5/20 seeds against AdamW.
+
+### Why Magma fails on this benchmark
+
+1. **Small block size**: With only 3 elements per block, cosine similarity between momentum and gradient is extremely noisy. The alignment score cannot reliably distinguish "aligned" from "misaligned" blocks.
+2. **Compounded damping**: Even at tau=0.1 (where s can approach 0 or 1), the Bernoulli mask at p=0.5 means each block's expected update is ~0.5× on average (from masking alone), on top of alignment scaling.
+3. **RMSProp base is weaker**: RMSProp (0.094) is 15x worse than AdamW (0.006) on this benchmark. Magma adds masking/alignment noise on top of an already-weaker base, widening the gap.
+
+### Plots
+
+| Plot | Description |
+|------|-------------|
+| `magma_tau_lr_heatmap_10k.png` | Tau × LR heatmap at 10000 iters |
+| `magma_tau_lr_heatmap_500.png` | Tau × LR heatmap at 500 iters (paper's timeframe) |
+| `magma_loss_curves.png` | Best Magma vs baselines loss curves |
+| `magma_alignment_scores.png` | Alignment score evolution: tau=2.0 vs tau=0.1 |
 
 ---
 
