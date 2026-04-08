@@ -238,8 +238,12 @@ def create_optimizer(name, dim=9, lr=0.01, **kwargs):
         return SkipUpdate(AdamW(dim, lr), masking="element")
     elif name == "skipupdate_sgd":
         return SkipUpdate(SGD(dim, lr), masking="element")
+    elif name == "skipupdate_sgd_block":
+        return SkipUpdate(SGD(dim, lr), masking="block")
     elif name == "skipupdate_sgd_momentum":
         return SkipUpdate(SGDMomentum(dim, lr), masking="element")
+    elif name == "skipupdate_sgd_momentum_block":
+        return SkipUpdate(SGDMomentum(dim, lr), masking="block")
     elif name == "magma_block":
         return Magma(RMSProp(dim, lr), masking="block", **kwargs)
     elif name == "magma_element":

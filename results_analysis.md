@@ -275,6 +275,40 @@ The Magma-specific alignment mechanism (damping based on gradient-momentum cosin
 
 ---
 
+## Key Finding 5: Masking Granularity Doesn't Change the Conclusion
+
+The earlier focused experiments had an asymmetry: SGD+Momentum was only tested with element-wise masking, while AdamW was only tested with block-wise. Since the broad sweep showed block-wise is 25x better for AdamW, we re-ran both with **both granularities** (30 seeds, 13-14 LRs).
+
+### Results
+
+| Optimizer | Best LR | Median Final Loss | IQR |
+|-----------|---------|-------------------|-----|
+| SGD+Momentum (baseline) | 0.00035 | **0.000646** | [0.000208, 27.07] |
+| SkipUpdate(SGD+Mom, element) | 0.00020 | 0.008660 | [0.002674, 0.047] |
+| SkipUpdate(SGD+Mom, block) | 0.00022 | 0.009387 | [0.004635, 0.041] |
+| AdamW (baseline) | 0.015 | **0.003454** | [0.000819, 0.023] |
+| SkipUpdate(AdamW, element) | 0.008 | 0.041746 | [0.027736, 0.107] |
+| SkipUpdate(AdamW, block) | 0.010 | 0.013131 | [0.001744, 0.041] |
+
+### Key observations
+
+1. **SGD+Momentum: block-wise doesn't help.** Element-wise (0.0087) and block-wise (0.0094) are nearly identical — both ~14x worse than baseline. The original focused experiment's conclusion holds.
+
+2. **AdamW: block-wise IS better than element-wise** (0.013 vs 0.042, ~3x), confirming the broad sweep pattern. But both are still **4-12x worse than plain AdamW**.
+
+3. **No granularity rescues SkipUpdate on this benchmark.** The gap was worth checking, but the fundamental issue (added Bernoulli noise + halved stability boundary for SGD) dominates regardless of masking granularity.
+
+### Plots
+
+| Plot | Description |
+|------|-------------|
+| `granularity_sgdmom_lr_sweep.png` | LR sweep for SGD+Mom: baseline vs element vs block |
+| `granularity_sgdmom_paired.png` | Paired-seed scatter for SGD+Mom |
+| `granularity_adamw_lr_sweep.png` | LR sweep for AdamW: baseline vs element vs block |
+| `granularity_adamw_paired.png` | Paired-seed scatter for AdamW |
+
+---
+
 ## Caveats
 
 1. **This is a 9D quadratic** — very different from billion-parameter transformer training
