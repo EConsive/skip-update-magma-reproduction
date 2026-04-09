@@ -127,7 +127,27 @@ The paper doesn't specify the subsampling fraction. Swept all k values with tau=
 
 Only k=2 shows a marginal Magma win (~2%), well within noise on 20 seeds. At all other k values, AdamW wins clearly. The trend shows Magma's disadvantage grows with increasing k (lower noise).
 
-### Why Magma fails on this benchmark
+### Attempt 4: 50k iterations — late-stage crossover FOUND
+
+Running to 50k steps reveals Magma(AdamW) DOES overtake AdamW at longer horizons:
+
+| LR | Crossover step | Magma@50k | AdamW@50k | Ratio | Best Magma advantage |
+|----|---------------|-----------|-----------|-------|---------------------|
+| 0.1 | ~5000 | 0.037 | 0.041 | 0.91 | **10× better at 10k** (0.034 vs 0.340) |
+| 0.03 | ~20000 | 0.0014 | 0.0026 | 0.56 | 1.8× better at 50k |
+| 0.01 | ~50000 | 0.0002 | 0.0016 | 0.14 | **7× better at 50k** |
+| 0.003 | never | 0.0039 | 0.0003 | 12.3 | AdamW always wins |
+
+**Key insight**: Magma's advantage emerges late because:
+1. Early on, the alignment score damping (s≈0.5) slows convergence vs plain AdamW
+2. Later, AdamW's constant-LR oscillation around the optimum (stochastic noise floor) is larger than Magma's, because Magma's masking acts as implicit regularization — selectively suppressing noisy updates on misaligned blocks
+3. The crossover point depends on LR: higher LR → earlier crossover (noisier regime)
+
+This is consistent with the paper's Figure 4, which shows Magma winning "only later on" and "not very clearly, just for a specific lr." The paper's "500 iterations" likely corresponds to ~5000-10000 gradient steps (i.e., iterations = epochs with multiple gradient steps each).
+
+See `magma_50k_curves.png` for convergence curves at all 4 LRs.
+
+### Why Magma fails at short horizons
 
 1. **Biased downward update**: Magma's expected update is s × p × Δ ≈ 0.5 × 0.5 × Δ = 0.25Δ. Unlike SkipUpdate (which uses s=1/p=2 for unbiased masking), Magma's alignment score creates a systematic LR reduction.
 2. **Small block size**: With only 3 elements per block, cosine similarity between momentum and gradient is noisy. The alignment score cannot reliably distinguish "aligned" from "misaligned" blocks.
