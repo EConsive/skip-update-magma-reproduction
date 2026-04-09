@@ -111,6 +111,17 @@ def main():
     from run_experiments import RESULTS_DIR
     import os
 
+    def ema_smooth(x, alpha=0.02):
+        """Exponential moving average for temporal smoothing."""
+        out = np.empty_like(x)
+        out[0] = x[0]
+        for i in range(1, len(x)):
+            if np.isfinite(x[i]):
+                out[i] = alpha * x[i] + (1 - alpha) * out[i - 1]
+            else:
+                out[i] = out[i - 1]
+        return out
+
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     for idx, lr in enumerate(LRS):
         ax = axes[idx // 2][idx % 2]
@@ -124,8 +135,14 @@ def main():
             median = np.nanmedian(losses, axis=0)
             q25 = np.nanpercentile(losses, 25, axis=0)
             q75 = np.nanpercentile(losses, 75, axis=0)
-            ax.semilogy(iters, median, label=name, color=color, linewidth=2, linestyle=ls)
-            ax.fill_between(iters, q25, q75, alpha=0.1, color=color)
+
+            # Apply EMA smoothing for cleaner curves
+            median_s = ema_smooth(median)
+            q25_s = ema_smooth(q25)
+            q75_s = ema_smooth(q75)
+
+            ax.semilogy(iters, median_s, label=name, color=color, linewidth=2, linestyle=ls)
+            ax.fill_between(iters, q25_s, q75_s, alpha=0.1, color=color)
 
         ax.set_title(f"lr={lr}")
         ax.set_xlabel("Gradient steps")
