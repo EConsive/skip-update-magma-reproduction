@@ -109,6 +109,24 @@ The paper's Figure 4 legend reads "AdamW+Magma" (from OCR), confirming the base 
 
 **Magma(AdamW) still never beats AdamW.** The best ratio is 1.72× (72% worse) at k=3, tau=0.1, lr=0.1. Across all 48 (tau × k × LR) combinations tested, the ratio is always > 1.0.
 
+### Attempt 3: Full k sweep (k=1..8 + Bernoulli)
+
+The paper doesn't specify the subsampling fraction. Swept all k values with tau=0.1, 500 iters, 20 seeds:
+
+| k | Best AdamW | Best Magma | Ratio | Winner |
+|---|------------|------------|-------|--------|
+| 1 | 7.23 | 13.93 | 1.93 | AdamW |
+| **2** | **6.65** | **6.51** | **0.98** | **Magma (~2%)** |
+| 3 | 2.75 | 4.73 | 1.72 | AdamW |
+| 4 | 2.04 | 3.87 | 1.90 | AdamW |
+| 5 | 1.28 | 3.67 | 2.87 | AdamW |
+| 6 | 1.07 | 2.70 | 2.52 | AdamW |
+| 7 | 0.77 | 2.71 | 3.52 | AdamW |
+| 8 | 0.69 | 2.49 | 3.61 | AdamW |
+| Bernoulli(0.5) | 1.87 | 4.91 | 2.63 | AdamW |
+
+Only k=2 shows a marginal Magma win (~2%), well within noise on 20 seeds. At all other k values, AdamW wins clearly. The trend shows Magma's disadvantage grows with increasing k (lower noise).
+
 ### Why Magma fails on this benchmark
 
 1. **Biased downward update**: Magma's expected update is s × p × Δ ≈ 0.5 × 0.5 × Δ = 0.25Δ. Unlike SkipUpdate (which uses s=1/p=2 for unbiased masking), Magma's alignment score creates a systematic LR reduction.

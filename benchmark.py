@@ -90,11 +90,21 @@ class QuadraticBenchmark:
         Stochastic gradient by subsampling k rows of X = H^{1/2}.
 
         g = (n/k) * X_S^T @ X_S @ w, where n=9, so E[g] = H @ w.
+
+        If subsample_k == "bernoulli", each row is included independently
+        with probability 0.5 (at least 1 row guaranteed).
         """
         n = self.X.shape[0]
-        indices = rng.choice(n, size=subsample_k, replace=False)
+        if subsample_k == "bernoulli":
+            mask = rng.random(n) < 0.5
+            if not mask.any():
+                mask[rng.integers(n)] = True
+            indices = np.where(mask)[0]
+        else:
+            indices = rng.choice(n, size=subsample_k, replace=False)
         X_S = self.X[indices]  # (k, 9)
-        return (n / subsample_k) * (X_S.T @ X_S @ w)
+        k = len(indices)
+        return (n / k) * (X_S.T @ X_S @ w)
 
     def initial_point(self, rng):
         """Standard initial point: all ones."""
