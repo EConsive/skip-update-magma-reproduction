@@ -97,11 +97,23 @@ We swept tau ∈ {0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0} × LR ∈ {0.003, 0.01, 0
 
 **Best Magma (tau=0.1) is still 29x worse than AdamW.** The tau sweep has no meaningful effect — all taus give similar results. Magma never wins more than 5/20 seeds against AdamW.
 
+### Attempt 2: Magma(AdamW) — matching the paper's Figure 4
+
+The paper's Figure 4 legend reads "AdamW+Magma" (from OCR), confirming the base optimizer is **AdamW, not RMSProp**. We re-ran with Magma(AdamW), matching the paper exactly: 500 iterations, heterogeneous, LRs = {0.003, 0.01, 0.03, 0.1}, and also swept tau ∈ {0.1, 0.5, 1.0, 2.0} × k ∈ {1, 3, 5}.
+
+| k | tau | Best Magma LR | Magma Med@500 | Best AdamW LR | AdamW Med@500 | Ratio |
+|---|-----|---------------|---------------|---------------|---------------|-------|
+| 1 | 0.1 | 0.100 | 13.93 | 0.100 | 7.23 | 1.93 |
+| 3 | 0.1 | 0.100 | 4.73 | 0.100 | 2.75 | **1.72** |
+| 5 | 0.5 | 0.100 | 3.34 | 0.100 | 1.28 | 2.62 |
+
+**Magma(AdamW) still never beats AdamW.** The best ratio is 1.72× (72% worse) at k=3, tau=0.1, lr=0.1. Across all 48 (tau × k × LR) combinations tested, the ratio is always > 1.0.
+
 ### Why Magma fails on this benchmark
 
-1. **Small block size**: With only 3 elements per block, cosine similarity between momentum and gradient is extremely noisy. The alignment score cannot reliably distinguish "aligned" from "misaligned" blocks.
-2. **Compounded damping**: Even at tau=0.1 (where s can approach 0 or 1), the Bernoulli mask at p=0.5 means each block's expected update is ~0.5× on average (from masking alone), on top of alignment scaling.
-3. **RMSProp base is weaker**: RMSProp (0.094) is 15x worse than AdamW (0.006) on this benchmark. Magma adds masking/alignment noise on top of an already-weaker base, widening the gap.
+1. **Biased downward update**: Magma's expected update is s × p × Δ ≈ 0.5 × 0.5 × Δ = 0.25Δ. Unlike SkipUpdate (which uses s=1/p=2 for unbiased masking), Magma's alignment score creates a systematic LR reduction.
+2. **Small block size**: With only 3 elements per block, cosine similarity between momentum and gradient is noisy. The alignment score cannot reliably distinguish "aligned" from "misaligned" blocks.
+3. **All taus give similar results**: Even tau=0.1 (highly discriminative) doesn't help because the alignment signal itself is unreliable at this scale.
 
 ### Plots
 

@@ -69,6 +69,12 @@ class AdamW:
             update += self.lr * self.weight_decay * w
         return w - update
 
+    def compute_update(self, grad):
+        """Compute the update vector without applying it. Used by Magma."""
+        mu_hat = self.mu / (1 - self.beta1 ** self.t)
+        v_hat = self.v / (1 - self.beta2 ** self.t)
+        return self.lr * mu_hat / (np.sqrt(v_hat) + self.eps)
+
 
 class RMSProp:
     """
@@ -153,7 +159,7 @@ def sigmoid(x):
 
 class Magma:
     """
-    Magma: momentum-aligned gradient masking on top of RMSProp.
+    Magma: momentum-aligned gradient masking on top of any adaptive optimizer.
 
     For each block:
       s_tilde = sigmoid(cossim(mu, g) / tau)
@@ -162,10 +168,11 @@ class Magma:
       w_new = w - s * mask * delta
 
     masking: 'block' or 'element' (alignment always computed per block)
+    Base can be RMSProp or AdamW.
     """
 
-    def __init__(self, base_rmsprop, masking="block", tau=2.0, ema_beta=0.9, p=0.5):
-        self.base = base_rmsprop
+    def __init__(self, base_optimizer, masking="block", tau=2.0, ema_beta=0.9, p=0.5):
+        self.base = base_optimizer
         self.masking = masking
         self.tau = tau
         self.ema_beta = ema_beta
@@ -181,10 +188,12 @@ class Magma:
             self.s[i] = self.ema_beta * self.s[i] + (1 - self.ema_beta) * s_tilde
 
         # 2. Update base optimizer state (dense momentum + v)
+        if hasattr(self.base, 't'):
+            self.base.t += 1  # needed for AdamW bias correction
         self.base.v = self.base.beta2 * self.base.v + (1 - self.base.beta2) * grad ** 2
         self.base.mu = self.base.beta1 * self.base.mu + (1 - self.base.beta1) * grad
 
-        # 3. Compute base RMSProp update
+        # 3. Compute base optimizer update
         update = self.base.compute_update(grad)
 
         # 4. Apply masked, alignment-scaled update
@@ -248,6 +257,10 @@ def create_optimizer(name, dim=9, lr=0.01, **kwargs):
         return Magma(RMSProp(dim, lr), masking="block", **kwargs)
     elif name == "magma_element":
         return Magma(RMSProp(dim, lr), masking="element", **kwargs)
+    elif name == "magma_adamw_block":
+        return Magma(AdamW(dim, lr), masking="block", **kwargs)
+    elif name == "magma_adamw_element":
+        return Magma(AdamW(dim, lr), masking="element", **kwargs)
     else:
         raise ValueError(f"Unknown optimizer: {name}")
 
