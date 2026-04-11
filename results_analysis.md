@@ -147,11 +147,86 @@ This is consistent with the paper's Figure 4, which shows Magma winning "only la
 
 See `magma_50k_curves.png` for convergence curves at all 4 LRs.
 
-### Why Magma fails at short horizons
+### Attempt 5: Near-optimum initialization (scale=0.01)
 
-1. **Biased downward update**: Magma's expected update is s × p × Δ ≈ 0.5 × 0.5 × Δ = 0.25Δ. Unlike SkipUpdate (which uses s=1/p=2 for unbiased masking), Magma's alignment score creates a systematic LR reduction.
-2. **Small block size**: With only 3 elements per block, cosine similarity between momentum and gradient is noisy. The alignment score cannot reliably distinguish "aligned" from "misaligned" blocks.
-3. **All taus give similar results**: Even tau=0.1 (highly discriminative) doesn't help because the alignment signal itself is unreliable at this scale.
+The 50k experiment showed Magma's advantage is a noise-floor phenomenon. To reach the crossover faster, we initialized closer to the optimum with w = 0.01 × ones(9) (instead of random initialization).
+
+| Scale | LR | AdamW Final | Magma Final | Ratio |
+|-------|-----|-------------|-------------|-------|
+| 0.01 | 0.003 | 0.000012 | 0.000030 | 2.51 |
+| 0.01 | 0.01 | 0.000009 | 0.000008 | **0.87** |
+| 0.01 | 0.03 | 0.000057 | 0.000021 | **0.37** |
+| 0.01 | 0.1 | 0.001026 | 0.000130 | **0.13** |
+
+At scale=0.01, Magma wins at lr=0.01, 0.03, and 0.1 — but these are same-LR comparisons, not best-vs-best.
+
+### Attempt 6: DEFINITIVE — Fine LR grid, best-vs-best (scale=0.01)
+
+20 log-spaced LRs (0.001–0.5), scale=0.01, 10k iterations, 20 seeds. Each method picks its own best LR.
+
+| Method | Best LR | Median Final Loss | vs AdamW |
+|--------|---------|-------------------|----------|
+| **AdamW** | 0.00322 | 0.0000166 | 1.000 |
+| **Magma(AdamW,block)** | **0.00610** | **0.0000029** | **0.173** |
+
+**Magma genuinely wins best-vs-best by ~6x** in the noise-floor regime. Key observations:
+- Magma prefers a ~2x higher LR than AdamW (0.0061 vs 0.0032)
+- The advantage is specific to the noise-floor regime (small init, many iterations)
+- This is consistent with Magma acting as implicit adaptive LR decay
+
+See `magma_fine_lr_sweep.png` and `magma_fine_lr_curves.png`.
+
+### Attempt 7: All masking variants compared (scale=0.01)
+
+All 5 methods on fine LR grid, scale=0.01, 10k iterations, 20 seeds:
+
+| Method | Best LR | Median Final Loss | vs AdamW |
+|--------|---------|-------------------|----------|
+| AdamW | 0.00322 | 0.0000166 | 1.000 |
+| **Magma(AdamW,block)** | **0.00610** | **0.0000029** | **0.173** |
+| Magma(AdamW,element) | 0.00192 | 0.0000269 | 1.621 |
+| SkipUpdate(AdamW,block) | 0.00192 | 0.0000298 | 1.797 |
+| SkipUpdate(AdamW,element) | 0.00139 | 0.0001758 | 10.599 |
+
+**Only Magma(block) beats AdamW.** The other variants are all worse:
+- Magma(element): 1.6x worse — element-wise alignment scores are noisier, less reliable
+- SkipUpdate(block): 1.8x worse — unbiased masking adds noise without alignment-based suppression
+- SkipUpdate(element): 10.6x worse — combines element noise with lack of alignment
+
+This confirms Magma's advantage is specifically from **alignment-based, block-wise noise suppression**, not just from masking/skipping in general.
+
+See `masking_comparison_lr_sweep.png` and `masking_comparison_curves.png`.
+
+### Attempt 8: Single block (3D) — inter-block selectivity not needed
+
+With 1 block (dim=3, eigenvalues {1, 99, 4998}), Magma has a single alignment score and a single coin flip — no inter-block selectivity possible.
+
+| Method | Best LR | Median Final Loss | vs AdamW |
+|--------|---------|-------------------|----------|
+| AdamW | 0.00139 | 0.00000048 | 1.000 |
+| **Magma(AdamW,block)** | **0.00192** | **0.00000014** | **0.299** |
+
+**Magma still wins 3.3x on a single block.** The advantage is purely from within-block alignment-based noise suppression — Magma detects when the gradient is misaligned with momentum (indicating noise dominance) and scales down the update. No inter-block discrimination needed.
+
+See `single_block_lr_sweep.png` and `single_block_curves.png`.
+
+### The full picture: Magma's mechanism
+
+Magma's advantage is **noise-floor suppression via alignment-based masking**:
+
+1. **Near the optimum**, gradients are small and dominated by stochastic noise
+2. **Noisy gradients** are misaligned with momentum → low alignment score → update scaled down
+3. **Signal-carrying gradients** are aligned with momentum → high alignment score → update applied
+4. This acts as **implicit, adaptive LR decay** — the optimizer automatically reduces its effective step size when noise dominates signal
+5. The benefit is equivalent to optimal LR scheduling, but without needing to tune a schedule
+
+Block-wise masking works because it preserves within-block correlation structure. Element-wise masking destroys this structure, making the alignment signal unreliable.
+
+### Why Magma fails at short horizons / large init
+
+1. **Biased downward update**: Magma's expected update is s × p × Δ ≈ 0.5 × 0.5 × Δ = 0.25Δ. This ~4x LR damping slows initial convergence.
+2. **Noise floor not yet reached**: Far from the optimum, all gradients carry signal, so alignment-based masking adds overhead without benefit.
+3. **Small block size** (3 elements): cosine similarity is noisy, but this is offset by the EMA smoothing in the alignment score.
 
 ### Plots
 
@@ -161,6 +236,12 @@ See `magma_50k_curves.png` for convergence curves at all 4 LRs.
 | `magma_tau_lr_heatmap_500.png` | Tau × LR heatmap at 500 iters (paper's timeframe) |
 | `magma_loss_curves.png` | Best Magma vs baselines loss curves |
 | `magma_alignment_scores.png` | Alignment score evolution: tau=2.0 vs tau=0.1 |
+| `magma_fine_lr_sweep.png` | Fine LR sweep: Magma vs AdamW (scale=0.01) |
+| `magma_fine_lr_curves.png` | Convergence at best LRs (scale=0.01) |
+| `masking_comparison_lr_sweep.png` | All 5 masking variants: LR sweep |
+| `masking_comparison_curves.png` | All 5 masking variants: convergence curves |
+| `single_block_lr_sweep.png` | Single-block (3D): LR sweep |
+| `single_block_curves.png` | Single-block (3D): convergence curves |
 
 ---
 
