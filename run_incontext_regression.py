@@ -29,10 +29,10 @@ from incontext_benchmark import LinearAttentionRegression, PARAM_DIM  # noqa: E4
 
 REGIMES = ["light", "heavy"]
 LRS = np.logspace(-4, 0, 12).tolist()  # 1e-4 to 1.0
-NUM_SEEDS = 20
-N_ITERS = 10000
-LOG_EVERY = 100
-N_EVAL = 256
+NUM_SEEDS = 15
+N_ITERS = 3000
+LOG_EVERY = 30
+N_EVAL = 128
 
 OPTIMS = {
     "adamw": lambda lr: AdamW(PARAM_DIM, lr),
