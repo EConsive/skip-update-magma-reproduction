@@ -168,6 +168,19 @@ class LinearAttentionRegression:
         Q[:self.d, :self.d] = -np.eye(self.d)
         return _pack(row_p, Q)
 
+    def warm_start_point(self, scale=0.5, rng=None):
+        """Warm-start halfway between near-optimum and optimum:
+        row_p = e_{d+1}, Q_xx = -scale * I_d, rest zero. Default scale=0.5.
+        Tests Magma during the second half of the Q-discovery transient,
+        where gradient is neither pure noise (optimum) nor dominated by the
+        global descent direction (near-optimum).
+        """
+        row_p = np.zeros(self.dp1)
+        row_p[-1] = 1.0
+        Q = np.zeros((self.dp1, self.dp1))
+        Q[:self.d, :self.d] = -scale * np.eye(self.d)
+        return _pack(row_p, Q)
+
 
 # ---------------------------------------------------------------------------
 # Gradient correctness check via finite differences

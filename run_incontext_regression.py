@@ -46,7 +46,7 @@ OPTIMS = {
 def run_one(regime, opt_name, lr, seed):
     benchmark = LinearAttentionRegression(regime)
     rng = np.random.default_rng(seed * 100000 + 12345)
-    W = benchmark.initial_point(rng)
+    W = benchmark.warm_start_point(scale=0.5, rng=rng)
     opt = OPTIMS[opt_name](lr)
     losses = []
     diverged = False
@@ -133,7 +133,7 @@ def main():
         for opt_name in OPTIMS:
             for lr_i, lr in enumerate(LRS):
                 save[f"{regime}__{opt_name}__lr{lr_i}"] = results[regime][opt_name][lr]
-    path = os.path.join(RESULTS_DIR, "incontext_regression_passA_nearinit.npz")
+    path = os.path.join(RESULTS_DIR, "incontext_regression_passA_warmstart.npz")
     np.savez(path, **save)
     print(f"\nSaved: {path}")
     print(f"Total Pass A time: {time.time() - t0:.0f}s")

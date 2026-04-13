@@ -488,27 +488,41 @@ If Magma's mechanism is real, the heavy-tailed regime should show a clear Magma 
 - **Sweep**: 12 LRs (1e-4 to 1.0, log-spaced) × 15 seeds × 3000 iters × 2 regimes × 2 inits = **1440 runs** total (720 per init).
 - **Metric**: median over seeds of (mean of last 5 log points per seed). Same best-vs-best methodology used throughout.
 
-### Two initializations tested
+### Three initializations tested
 
-The benchmark has a dead saddle at `(row_p, Q) = (0, 0)` — all gradients are zero there. To probe the mechanism cleanly we ran two near-the-optimum inits, both of which break the saddle:
+The benchmark has a dead saddle at `(row_p, Q) = (0, 0)` — all gradients are zero there. To probe the mechanism across the convergence trajectory we ran three near-the-optimum inits, all of which break the saddle:
 
-1. **near-optimum**: `row_p = e_{d+1}` (6th basis vector), `Q = 0`. Tests Magma during the *transient* where `Q` learns `-I_d` from zero.
-2. **optimum**: `row_p = e_{d+1}`, `Q_xx = -I_d`, rest zero. The exact theoretical optimum (Ahn et al. 2024 §4: optimal single-layer linear attention implements one step of preconditioned GD from `w=0`). At this point the gradient is *literally pure noise* — exactly where the paper's mechanism should bite hardest.
+1. **near-optimum**: `row_p = e_{d+1}` (6th basis vector), `Q = 0`. Magma gets to act during the *full* transient where `Q` discovers `-I_d` from zero.
+2. **warm-start**: `row_p = e_{d+1}`, `Q_xx = -0.5·I_d`. Halfway between the dead saddle and the optimum — second half of the Q-discovery transient, where the gradient is no longer dominated by the global descent direction.
+3. **optimum**: `row_p = e_{d+1}`, `Q_xx = -I_d`. The exact theoretical optimum (Ahn et al. 2024 §4: optimal single-layer linear attention implements one step of preconditioned GD from `w=0`). At this point the gradient is *literally pure noise* — exactly where the paper's "smooth rare large updates" mechanism should bite hardest.
 
-### Result: tie in all four cells
+### Result: tie in all six cells
 
 | init | regime | AdamW best LR | AdamW tail loss | Magma best LR | Magma tail loss | Magma / AdamW |
 |---|---|---|---|---|---|---|
-| optimum | light | 5.3e-4 | 0.6215 | 1.2e-3 | 0.6171 | **0.993** |
-| optimum | heavy | 2.85e-3 | 0.3226 | 6.6e-3 | 0.3226 | **1.000** |
 | near-optimum | light | 1.23e-3 | 0.6633 | 2.85e-3 | 0.6546 | **0.987** |
 | near-optimum | heavy | 6.58e-3 | 0.3901 | 1.52e-2 | 0.4027 | **1.032** |
+| warm-start | light | 5.3e-4 | 0.6247 | 1.23e-3 | 0.6248 | **1.000** |
+| warm-start | heavy | 2.85e-3 | 0.3493 | 1.52e-2 | 0.3465 | **0.992** |
+| optimum | light | 5.3e-4 | 0.6215 | 1.23e-3 | 0.6171 | **0.993** |
+| optimum | heavy | 2.85e-3 | 0.3226 | 6.58e-3 | 0.3226 | **1.000** |
 
-All four ratios sit within ±3% of parity. The paper's claimed heavy-tailed advantage does not appear in either init regime, and on near-optimum heavy Magma is actually slightly *worse* than AdamW.
+All six ratios sit within ±3.2% of parity. The paper's claimed heavy-tailed advantage does not appear in any init regime, and on near-optimum heavy Magma is actually slightly *worse* than AdamW. The three inits walk through the full convergence trajectory (cold transient → mid-transient → noise floor) and Magma never separates from AdamW best-vs-best in any of them.
 
 ### The damped-LR signature, again
 
-Magma's best LR is consistently ~2.3× AdamW's best LR (1.2e-3/5.3e-4 = 2.26 light-opt, 6.6e-3/2.85e-3 = 2.32 heavy-opt, 2.85e-3/1.23e-3 = 2.32 light-near, 1.52e-2/6.58e-3 = 2.31 heavy-near — almost suspiciously uniform). This is the same pattern we already documented on §4.4 quadratics and the §4.4-coupling probe: **Magma widens the usable LR window** (it's more stable at large LRs because Bernoulli masking + alignment scaling shrinks the per-step update), **but ties at the best tuned LR**. Mechanically Magma is behaving like "AdamW with ~half the effective step", not like a method that's specifically robust to heavy-tailed noise.
+Magma's best LR sits 2-5× above AdamW's best LR in every cell:
+
+| init | regime | AdamW best LR | Magma best LR | ratio |
+|---|---|---|---|---|
+| near-optimum | light | 1.23e-3 | 2.85e-3 | 2.32× |
+| near-optimum | heavy | 6.58e-3 | 1.52e-2 | 2.31× |
+| warm-start | light | 5.3e-4 | 1.23e-3 | 2.32× |
+| warm-start | heavy | 2.85e-3 | 1.52e-2 | 5.33× |
+| optimum | light | 5.3e-4 | 1.23e-3 | 2.32× |
+| optimum | heavy | 2.85e-3 | 6.58e-3 | 2.31× |
+
+This is the same pattern we already documented on §4.4 quadratics and the §4.4-coupling probe: **Magma widens the usable LR window** (it's more stable at large LRs because Bernoulli masking + alignment scaling shrinks the per-step update), **but ties at the best tuned LR**. Mechanically Magma is behaving like "AdamW with ~half the effective step", not like a method that's specifically robust to heavy-tailed noise. The 5.3× outlier on warm-start heavy is interesting — Magma can run substantially hotter there without diverging — but the loss it reaches is still indistinguishable from AdamW at the smaller LR.
 
 ### Why the optimum-init test is the cleanest falsification
 
@@ -542,10 +556,12 @@ The first Pass A run on the 42-param architecture had a stale `BLOCK_SLICES` mon
 | §4.4 heterogeneous quadratic | ≈1.0 | tie (paper claimed Magma wins) |
 | §4.4 single-block 3D | 0.30 | Magma wins (without any inter-block selectivity) |
 | §4.4-coupling 2D probe | ≈1.0 | tie; SkipUpdate ≠ Magma's mechanism |
-| §4.3 in-context regression, light, optimum init | 0.993 | tie |
-| §4.3 in-context regression, heavy, optimum init | 1.000 | tie |
 | §4.3 in-context regression, light, near-optimum init | 0.987 | tie |
 | §4.3 in-context regression, heavy, near-optimum init | 1.032 | AdamW slightly wins |
+| §4.3 in-context regression, light, warm-start init | 1.000 | tie |
+| §4.3 in-context regression, heavy, warm-start init | 0.992 | tie |
+| §4.3 in-context regression, light, optimum init | 0.993 | tie |
+| §4.3 in-context regression, heavy, optimum init | 1.000 | tie |
 
 The damped-LR pattern shows up in every comparison where we actually swept LRs. The single-block 3D win remains the only case where Magma genuinely beats AdamW best-vs-best in our experiments — and that win comes from a single-block setup with *no* inter-block selectivity, which is incompatible with the paper's stated mechanism.
 

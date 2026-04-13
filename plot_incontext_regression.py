@@ -26,8 +26,9 @@ OPT_STYLE = {
 }
 
 INIT_FILES = [
-    ("optimum",      "incontext_regression_passA.npz"),
     ("near-optimum", "incontext_regression_passA_nearinit.npz"),
+    ("warm-start",   "incontext_regression_passA_warmstart.npz"),
+    ("optimum",      "incontext_regression_passA.npz"),
 ]
 
 
