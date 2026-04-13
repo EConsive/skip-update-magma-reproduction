@@ -6,9 +6,9 @@ Pass A gates Pass B: if Magma(AdamW) reproduces the paper's heavy-tailed
 advantage, we run Pass B adding SkipUpdate(AdamW) and RMSProp. Otherwise we
 document the second non-reproduction.
 
-Architecture note: we use the canonical Ahn et al. 2024 preconditioner
-parameterization W in R^{d x d} (25 params for d=5), not a merged
-R^{(d+1) x (d+1)} matrix — see incontext_benchmark.py docstring for why.
+Architecture note: we use the exact Ahn et al. 2024 single-layer linear
+attention parameterization (row_p ∈ R^{d+1}, Q ∈ R^{(d+1)×(d+1)}), 42 params
+total for d=5. See incontext_benchmark.py docstring.
 """
 
 import os
@@ -16,11 +16,14 @@ import time
 import numpy as np
 
 # Monkeypatch BLOCK_SLICES BEFORE importing optimizer classes.
-# 25 params = 5 blocks of 5 (natural: one block per row of W).
+# 42 params = 7 blocks of 6 under the Ahn et al. layout:
+#   block 0   = row_p          (params[0:6])
+#   blocks 1..6 = rows of Q    (params[6+6*i : 6+6*(i+1)] for i in 0..5)
+# Each block is one semantically meaningful row of the parameterization.
 import optimizers
-optimizers.BLOCK_SIZE = 5
-optimizers.NUM_BLOCKS = 5
-optimizers.BLOCK_SLICES = [slice(5 * i, 5 * (i + 1)) for i in range(5)]
+optimizers.BLOCK_SIZE = 6
+optimizers.NUM_BLOCKS = 7
+optimizers.BLOCK_SLICES = [slice(6 * i, 6 * (i + 1)) for i in range(7)]
 
 from optimizers import AdamW, Magma  # noqa: E402
 from run_experiments import RESULTS_DIR  # noqa: E402
@@ -43,7 +46,7 @@ OPTIMS = {
 def run_one(regime, opt_name, lr, seed):
     benchmark = LinearAttentionRegression(regime)
     rng = np.random.default_rng(seed * 100000 + 12345)
-    W = benchmark.initial_point(rng)
+    W = benchmark.optimum_point(rng)
     opt = OPTIMS[opt_name](lr)
     losses = []
     diverged = False
@@ -130,7 +133,7 @@ def main():
         for opt_name in OPTIMS:
             for lr_i, lr in enumerate(LRS):
                 save[f"{regime}__{opt_name}__lr{lr_i}"] = results[regime][opt_name][lr]
-    path = os.path.join(RESULTS_DIR, "incontext_regression_passA.npz")
+    path = os.path.join(RESULTS_DIR, "incontext_regression_passA.npz")  # overwrites old buggy file
     np.savez(path, **save)
     print(f"\nSaved: {path}")
     print(f"Total Pass A time: {time.time() - t0:.0f}s")
