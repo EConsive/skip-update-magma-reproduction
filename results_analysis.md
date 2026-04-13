@@ -470,6 +470,99 @@ The earlier focused experiments had an asymmetry: SGD+Momentum was only tested w
 
 ---
 
+## Key Finding 6: Section 4.3 — Magma Doesn't Reproduce on In-Context Linear Regression Either
+
+The Magma paper's §4.3 benchmark is the one where the proposed mechanism ("curvature-aware masking smooths rare, large updates from heavy-tailed gradient noise") should be most discriminating. The setup compares two covariate distributions for in-context linear regression:
+
+- **Light-tailed**: `x_i ~ N(0, I_d)`, gradient noise is sub-Gaussian.
+- **Heavy-tailed**: `x_i = u_i · sqrt(γ_i)`, `u_i` uniform on the sphere, `γ_i ~ Gamma(0.1, 10)`. Same `E[xx^T] = I` as light, but heavy-tailed radii → heavy-tailed gradient noise.
+
+If Magma's mechanism is real, the heavy-tailed regime should show a clear Magma > AdamW gap that *shrinks or disappears* under light-tailed covariates.
+
+### Setup
+
+- **Architecture**: exact Ahn et al. 2024 single-layer linear self-attention, `Attn_{P,Q}(Z) = P·Z·M·(Z^T Q Z)`. Identifiability reduction: only the last row of P enters the loss (`row_p ∈ R^{d+1}`, 6 entries) plus `Q ∈ R^{(d+1)×(d+1)}` (36 entries). Total **42 trainable params** for `d=5`.
+- **Task**: `n=20` context pairs, `d=5`, fresh prompt every step, `w* ~ N(0, I_d)`.
+- **Block masking layout**: 7 blocks of 6 = 42 params. Block 0 is `row_p`; blocks 1..6 are the rows of `Q`. Each block is one semantically meaningful row of the parameterization.
+- **Optimizers**: AdamW vs Magma(AdamW, block). Pass A only — Pass B (SkipUpdate, RMSProp) was gated on Magma reproducing the heavy-tailed advantage; that gate did not open.
+- **Sweep**: 12 LRs (1e-4 to 1.0, log-spaced) × 15 seeds × 3000 iters × 2 regimes × 2 inits = **1440 runs** total (720 per init).
+- **Metric**: median over seeds of (mean of last 5 log points per seed). Same best-vs-best methodology used throughout.
+
+### Two initializations tested
+
+The benchmark has a dead saddle at `(row_p, Q) = (0, 0)` — all gradients are zero there. To probe the mechanism cleanly we ran two near-the-optimum inits, both of which break the saddle:
+
+1. **near-optimum**: `row_p = e_{d+1}` (6th basis vector), `Q = 0`. Tests Magma during the *transient* where `Q` learns `-I_d` from zero.
+2. **optimum**: `row_p = e_{d+1}`, `Q_xx = -I_d`, rest zero. The exact theoretical optimum (Ahn et al. 2024 §4: optimal single-layer linear attention implements one step of preconditioned GD from `w=0`). At this point the gradient is *literally pure noise* — exactly where the paper's mechanism should bite hardest.
+
+### Result: tie in all four cells
+
+| init | regime | AdamW best LR | AdamW tail loss | Magma best LR | Magma tail loss | Magma / AdamW |
+|---|---|---|---|---|---|---|
+| optimum | light | 5.3e-4 | 0.6215 | 1.2e-3 | 0.6171 | **0.993** |
+| optimum | heavy | 2.85e-3 | 0.3226 | 6.6e-3 | 0.3226 | **1.000** |
+| near-optimum | light | 1.23e-3 | 0.6633 | 2.85e-3 | 0.6546 | **0.987** |
+| near-optimum | heavy | 6.58e-3 | 0.3901 | 1.52e-2 | 0.4027 | **1.032** |
+
+All four ratios sit within ±3% of parity. The paper's claimed heavy-tailed advantage does not appear in either init regime, and on near-optimum heavy Magma is actually slightly *worse* than AdamW.
+
+### The damped-LR signature, again
+
+Magma's best LR is consistently ~2.3× AdamW's best LR (1.2e-3/5.3e-4 = 2.26 light-opt, 6.6e-3/2.85e-3 = 2.32 heavy-opt, 2.85e-3/1.23e-3 = 2.32 light-near, 1.52e-2/6.58e-3 = 2.31 heavy-near — almost suspiciously uniform). This is the same pattern we already documented on §4.4 quadratics and the §4.4-coupling probe: **Magma widens the usable LR window** (it's more stable at large LRs because Bernoulli masking + alignment scaling shrinks the per-step update), **but ties at the best tuned LR**. Mechanically Magma is behaving like "AdamW with ~half the effective step", not like a method that's specifically robust to heavy-tailed noise.
+
+### Why the optimum-init test is the cleanest falsification
+
+Initialized at the exact optimum:
+- The gradient has zero mean (we're already there) — it's purely the noise distribution induced by sampling fresh prompts.
+- Under heavy-tailed covariates, that noise is heavy-tailed by construction.
+- Any drift away from the optimum is *only* the optimizer's response to noise.
+- An optimizer that "smooths rare large gradients" should drift less than one that doesn't.
+
+We see no such effect: Magma/AdamW = 1.000 at the optimum on the heavy-tailed regime. This is the cleanest possible setting for the paper's mechanism, and it doesn't deliver.
+
+### Architecture cross-check
+
+The architecture is taken directly from Ahn et al. 2024 §3.1 Eq. 1 (the citation that Magma's §4.3 explicitly references), not a paraphrase:
+
+```
+Attn_{P,Q}(Z) = P · Z · M · (Z^T Q Z),    M = diag(I_n, 0)
+TF(Z_0)        = -[Z_1]_{(d+1), (n+1)}
+```
+
+The forward pass is linear in both `row_p` and `Q`, so the analytic gradient is just two rank-1 outer products. We verified analytic vs finite-difference gradient agreement to **6e-11** relative error on both regimes (in `incontext_benchmark.py` under `__main__`). The benchmark code is not the issue.
+
+### One bug along the way (worth recording)
+
+The first Pass A run on the 42-param architecture had a stale `BLOCK_SLICES` monkeypatch left over from a 25-param prototype: `5 blocks of 5 = 25 params`, leaving 17 of `Q`'s 36 entries (including most of `Q_xx`) silently *frozen* under Magma's block masking. That run looked like Magma was losing 2.14× / 1.12× — entirely artifactual, since 40% of Magma's gradient was being thrown away. Fixing the monkeypatch to 7 blocks of 6 = 42 brought Magma back up to parity (the table above). The bug-fixed result is the one that goes into the writeup. Lesson: any monkeypatch on a module-global needs to track architecture changes.
+
+### Combined picture across all our experiments
+
+| benchmark | Magma/AdamW (best-vs-best) | Magma's status |
+|---|---|---|
+| §4.4 heterogeneous quadratic | ≈1.0 | tie (paper claimed Magma wins) |
+| §4.4 single-block 3D | 0.30 | Magma wins (without any inter-block selectivity) |
+| §4.4-coupling 2D probe | ≈1.0 | tie; SkipUpdate ≠ Magma's mechanism |
+| §4.3 in-context regression, light, optimum init | 0.993 | tie |
+| §4.3 in-context regression, heavy, optimum init | 1.000 | tie |
+| §4.3 in-context regression, light, near-optimum init | 0.987 | tie |
+| §4.3 in-context regression, heavy, near-optimum init | 1.032 | AdamW slightly wins |
+
+The damped-LR pattern shows up in every comparison where we actually swept LRs. The single-block 3D win remains the only case where Magma genuinely beats AdamW best-vs-best in our experiments — and that win comes from a single-block setup with *no* inter-block selectivity, which is incompatible with the paper's stated mechanism.
+
+### Plots
+
+| Plot | Description |
+|------|-------------|
+| `incontext_lr_sweep.png` | 2×2 grid (rows = init, cols = regime). LR sweep per optimizer; circles mark each method's best LR. |
+| `incontext_curves.png` | 2×2 grid. Best-LR loss trajectories (median + IQR, EMA-smoothed). |
+| `incontext_ratio.png` | 4-bar chart of Magma/AdamW best-vs-best ratio across the four (init, regime) cells. |
+
+### Open question for revisit
+
+The paper's §4.3 result might still hold under a setup detail we haven't matched — most likely candidates are (a) longer training horizons, (b) cold init from random small values rather than near the optimum, (c) a different LR schedule, (d) a fresh random `w*` per step but at a much larger `d`. If we revisit, the cleanest follow-up would be cold init at scale ~0.01 with a 30k-iter horizon, since that's the closest thing to "from scratch" we can do without re-introducing the dead saddle directly.
+
+---
+
 ## Caveats
 
 1. **This is a 9D quadratic** — very different from billion-parameter transformer training
